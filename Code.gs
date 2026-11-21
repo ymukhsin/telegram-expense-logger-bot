@@ -1,6 +1,5 @@
 /**
- * Milestone 3: Interactive Inline Category Keyboards & Row Updates
- * Updates Column E (Category) via Telegram callback_query events.
+ * Milestone 4: Receipt Photo Archiving (Google Drive) + Text Expenses + Categories
  */
 
 const SHEET_NAME = "Expenses";
@@ -62,19 +61,33 @@ function handleMessage(message, config) {
   const userId = String(message.from.id);
   const text = (message.text || "").trim();
 
-  if (!text) return;
-
+  // 1. Slash commands
   if (text === "/start" || text === "/help") {
     const welcome =
       "💸 <b>Pocket Ledger Bot</b>\n\n" +
-      "Send an expense starting with the amount:\n" +
-      "• <code>12000 lunch with team</code>\n" +
-      "• <code>4500 iced americano</code>";
+      "• <b>Log text expense:</b> <code>12000 lunch with team</code>\n" +
+      "• <b>Log receipt photo:</b> Send a photo with caption <code>45000 groceries</code>";
     sendReply(chatId, welcome, config.BOT_TOKEN);
     return;
   }
 
-  const parsed = parseExpenseInput(text);
+  // 2. Receipt photo (with or without caption)
+  if (message.photo && message.photo.length > 0) {
+    handlePhotoExpense(message, config);
+    return;
+  }
+
+  // 3. Standard text expense
+  if (text) {
+    handleTextExpense(message, config);
+  }
+}
+
+function handleTextExpense(message, config) {
+  const chatId = message.chat.id;
+  const userId = String(message.from.id);
+  const parsed = parseExpenseInput(message.text.trim());
+
   if (!parsed) {
     sendReply(
       chatId,
@@ -105,14 +118,51 @@ function handleMessage(message, config) {
 }
 
 /**
- * Triggered when a user taps one of the inline category buttons.
+ * Downloads the highest-resolution receipt photo from Telegram, archives it
+ * inside a user-specific Google Drive subfolder, and logs the shareable link.
  */
+function handlePhotoExpense(message, config) {
+  const chatId = message.chat.id;
+  const userId = String(message.from.id);
+  const caption = (message.caption || "").trim();
+  const parsed = caption ? parseExpenseInput(caption) : null;
+
+  const amount = parsed ? parsed.amount : 0;
+  const description = parsed
+    ? parsed.description
+    : caption || "Receipt photo";
+
+  // Telegram sorts photo sizes ascending; the last item is the highest resolution
+  const largestPhoto = message.photo[message.photo.length - 1];
+  const imageBlob = downloadTelegramFile(largestPhoto.file_id, config.BOT_TOKEN);
+  const receiptUrl = saveReceiptToDrive(imageBlob, config.DRIVE_FOLDER_ID, userId);
+
+  const entryId = Utilities.getUuid().slice(0, 8).toUpperCase();
+  appendExpenseRow(config.SPREADSHEET_ID, {
+    entryId: entryId,
+    userId: userId,
+    amount: amount,
+    category: "Uncategorized",
+    description: description,
+    receiptUrl: receiptUrl
+  });
+
+  const reply =
+    `🧾 <b>Receipt Archived!</b>\n` +
+    `💰 <b>Amount:</b> ${amount.toLocaleString("en-US")}\n` +
+    `📝 <b>Note:</b> ${escapeHtml(description)}\n` +
+    `🔗 <a href="${receiptUrl}">View Receipt in Drive</a>\n` +
+    `🆔 <code>${entryId}</code>\n\n` +
+    `👇 <b>Select a category:</b>`;
+
+  sendReply(chatId, reply, config.BOT_TOKEN, buildCategoryKeyboard(entryId));
+}
+
 function handleCallbackQuery(callbackQuery, config) {
   const userId = String(callbackQuery.from.id);
   const chatId = callbackQuery.message.chat.id;
   const messageId = callbackQuery.message.message_id;
 
-  // Payload format: "cat:<entryId>:<category>"
   const parts = (callbackQuery.data || "").split(":");
   if (parts.length !== 3 || parts[0] !== "cat") {
     answerCallbackQuery(callbackQuery.id, "Invalid action.", config.BOT_TOKEN);
@@ -124,14 +174,25 @@ function handleCallbackQuery(callbackQuery, config) {
   const updated = updateRowCategory(config.SPREADSHEET_ID, entryId, userId, category);
 
   if (updated) {
-    // 1. Stop the loading spinner on the Telegram button
     answerCallbackQuery(callbackQuery.id, `Saved as ${category}!`, config.BOT_TOKEN);
 
-    // 2. Replace the prompt text & remove the buttons so it can't be clicked twice
+    // Preserve clickable Drive link if this confirmation came from a receipt photo
+    const linkEntity = (callbackQuery.message.entities || []).find(
+      (ent) => ent.type === "text_link"
+    );
+
     const baseText = callbackQuery.message.text
       .replace("👇 Select a category:", "")
       .trim();
-    const updatedText = `${escapeHtml(baseText)}\n🏷️ <b>Category:</b> ${escapeHtml(category)}`;
+
+    let updatedText = escapeHtml(baseText);
+    if (linkEntity && linkEntity.url) {
+      updatedText = updatedText.replace(
+        "🔗 View Receipt in Drive",
+        `🔗 <a href="${linkEntity.url}">View Receipt in Drive</a>`
+      );
+    }
+    updatedText += `\n🏷️ <b>Category:</b> ${escapeHtml(category)}`;
 
     editMessageText(chatId, messageId, updatedText, config.BOT_TOKEN);
   } else {
@@ -140,7 +201,7 @@ function handleCallbackQuery(callbackQuery, config) {
 }
 
 // ============================================================================
-// GOOGLE SHEETS HELPERS
+// GOOGLE SHEETS & GOOGLE DRIVE HELPERS
 // ============================================================================
 
 function appendExpenseRow(spreadsheetId, entry) {
@@ -163,17 +224,47 @@ function updateRowCategory(spreadsheetId, entryId, userId, newCategory) {
   const sheet = SpreadsheetApp.openById(spreadsheetId).getSheetByName(SHEET_NAME);
   const data = sheet.getDataRange().getValues();
 
-  // Search bottom-up since users categorize their most recent expense first
   for (let i = data.length - 1; i >= 1; i--) {
-    const rowEntryId = String(data[i][0]);
-    const rowUserId = String(data[i][1]);
-
-    if (rowEntryId === entryId && rowUserId === userId) {
-      sheet.getRange(i + 1, 5).setValue(newCategory); // Column E (5) = Category
+    if (String(data[i][0]) === entryId && String(data[i][1]) === userId) {
+      sheet.getRange(i + 1, 5).setValue(newCategory); // Column E = Category
       return true;
     }
   }
   return false;
+}
+
+function downloadTelegramFile(fileId, botToken) {
+  const metaUrl = `https://api.telegram.org/bot${botToken}/getFile?file_id=${fileId}`;
+  const metaRes = JSON.parse(UrlFetchApp.fetch(metaUrl).getContentText());
+
+  if (!metaRes.ok) {
+    throw new Error("Failed to fetch file path from Telegram");
+  }
+
+  const filePath = metaRes.result.file_path;
+  const downloadUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
+  const blob = UrlFetchApp.fetch(downloadUrl).getBlob();
+
+  const tz = Session.getScriptTimeZone();
+  const stamp = Utilities.formatDate(new Date(), tz, "yyyyMMdd_HHmmss");
+  blob.setName(`receipt_${stamp}.jpg`);
+  return blob;
+}
+
+function saveReceiptToDrive(blob, rootFolderId, userId) {
+  const userFolder = getOrCreateUserFolder(rootFolderId, userId);
+  const file = userFolder.createFile(blob);
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  return file.getUrl();
+}
+
+function getOrCreateUserFolder(rootFolderId, userId) {
+  const rootFolder = DriveApp.getFolderById(rootFolderId);
+  const existing = rootFolder.getFoldersByName(String(userId));
+  if (existing.hasNext()) {
+    return existing.next();
+  }
+  return rootFolder.createFolder(String(userId));
 }
 
 // ============================================================================
@@ -197,7 +288,6 @@ function buildCategoryKeyboard(entryId) {
     callback_data: `cat:${entryId}:${value}`
   }));
 
-  // Group buttons into rows of 3 max
   const rows = [];
   for (let i = 0; i < buttons.length; i += 3) {
     rows.push(buttons.slice(i, i + 3));
@@ -209,7 +299,8 @@ function sendReply(chatId, htmlText, token, replyMarkup) {
   const payload = {
     chat_id: chatId,
     text: htmlText,
-    parse_mode: "HTML"
+    parse_mode: "HTML",
+    disable_web_page_preview: true
   };
   if (replyMarkup) {
     payload.reply_markup = replyMarkup;
@@ -230,7 +321,8 @@ function editMessageText(chatId, messageId, htmlText, token) {
       chat_id: chatId,
       message_id: messageId,
       text: htmlText,
-      parse_mode: "HTML"
+      parse_mode: "HTML",
+      disable_web_page_preview: true
     })
   });
 }
@@ -251,6 +343,20 @@ function escapeHtml(str) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+// ============================================================================
+// DEPLOYMENT & SETUP UTILITIES
+// ============================================================================
+
+/**
+ * Run once during setup to authorize Google Sheets & Google Drive scopes.
+ */
+function authorizeServices() {
+  const config = getConfig();
+  const sheet = SpreadsheetApp.openById(config.SPREADSHEET_ID).getSheetByName(SHEET_NAME);
+  const folder = DriveApp.getFolderById(config.DRIVE_FOLDER_ID);
+  console.log(`Authorized! Sheet: ${sheet.getName()}, Folder: ${folder.getName()}`);
 }
 
 function registerWebhook() {
