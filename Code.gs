@@ -1,18 +1,20 @@
 /**
- * Milestone 1: Minimal Webhook Ping & User ID Security Guard
+ * Milestone 1: Multi-User Webhook Ping
+ * Google Sheets acts as a private headless database; Telegram is the sole user UI.
  */
 
-// 1. Reads your secret keys from Google's secure storage (never hardcoded in GitHub)
+// 1. Reads secret keys from Google's secure Script Properties
 function getConfig() {
   const props = PropertiesService.getScriptProperties();
   return {
     BOT_TOKEN: props.getProperty("BOT_TOKEN"),
-    ALLOWED_USER_ID: props.getProperty("ALLOWED_USER_ID"),
+    SPREADSHEET_ID: props.getProperty("SPREADSHEET_ID"),
+    DRIVE_FOLDER_ID: props.getProperty("DRIVE_FOLDER_ID"),
     WEB_APP_URL: props.getProperty("WEB_APP_URL")
   };
 }
 
-// 2. Runs automatically whenever Telegram sends a message to our Web App URL
+// 2. Runs automatically whenever any user messages the bot
 function doPost(e) {
   try {
     const update = JSON.parse(e.postData.contents);
@@ -20,25 +22,25 @@ function doPost(e) {
 
     const config = getConfig();
     const chatId = update.message.chat.id;
-    const userId = String(update.message.from.id);
+    const userId = update.message.from.id;
+    const firstName = escapeHtml(update.message.from.first_name || "there");
+    const text = escapeHtml(update.message.text || "(non-text message)");
 
-    // Security check: ignore anyone except your own Telegram account
-    if (userId !== String(config.ALLOWED_USER_ID)) {
-      sendReply(chatId, "⛔ Private bot.", config.BOT_TOKEN);
-      return ContentService.createTextOutput("OK");
-    }
+    const reply =
+      `✅ <b>Webhook connected!</b>\n` +
+      `👋 Hey ${firstName}, your isolated User ID is <code>${userId}</code>.\n` +
+      `💬 You sent: <b>${text}</b>`;
 
-    const text = update.message.text || "(non-text message)";
-    sendReply(chatId, `✅ Webhook connected! You sent: <b>${text}</b>`, config.BOT_TOKEN);
+    sendReply(chatId, reply, config.BOT_TOKEN);
   } catch (err) {
     console.error(err);
   }
 
-  // Always return "OK" (HTTP 200) so Telegram doesn't keep retrying the message
+  // Always return HTTP 200 OK so Telegram doesn't retry the request
   return ContentService.createTextOutput("OK");
 }
 
-// 3. Helper function to send a text reply back to Telegram
+// 3. Helper function to send an HTML-formatted message back to Telegram
 function sendReply(chatId, htmlText, token) {
   UrlFetchApp.fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "post",
@@ -51,7 +53,15 @@ function sendReply(chatId, htmlText, token) {
   });
 }
 
-// 4. One-time setup function to tell Telegram where to send messages
+// Prevents user text containing < or > from breaking Telegram HTML formatting
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// 4. One-time setup function to bind Telegram to your Web App URL
 function registerWebhook() {
   const config = getConfig();
   const url = `https://api.telegram.org/bot${config.BOT_TOKEN}/setWebhook?url=${encodeURIComponent(config.WEB_APP_URL)}`;
