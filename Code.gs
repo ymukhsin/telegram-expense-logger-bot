@@ -62,31 +62,52 @@ function isDuplicateUpdate(updateId) {
 function handleMessage(message, config) {
   const chatId = message.chat.id;
   const text = (message.text || "").trim();
+  const firstName = escapeHtml((message.from && message.from.first_name) || "there");
 
-  // 1. Help / Start command
-  if (text === "/start" || text === "/help") {
+  // 1. Personalized Welcome Onboarding (/start)
+  if (text === "/start") {
     const welcome =
-      "💸 <b>Pocket Ledger Bot</b>\n\n" +
-      "• <b>Log text expense:</b> <code>12000 lunch with team</code>\n" +
-      "• <b>Log receipt photo:</b> Send a photo with caption <code>45000 groceries</code>\n" +
-      "• <b>Monthly report:</b> <code>/summary</code> or <code>/summary 2026-11</code>";
+      `👋 <b>Welcome to Pocket Ledger, ${firstName}!</b>\n\n` +
+      `Log your daily spending in seconds—no spreadsheets to open, no forms to fill.\n\n` +
+      `🚀 <b>Try your first entry right now:</b>\n` +
+      `• <b>Cash / Quick Note:</b> <code>12000 lunch with team</code>\n` +
+      `• <b>Receipt Photo:</b> Snap a receipt with caption <code>45000 groceries</code>\n` +
+      `• <b>Monthly Report:</b> Tap or send /summary\n\n` +
+      `🔒 <i>Your expenses and receipts are isolated privately under your Telegram ID.</i>`;
     sendReply(chatId, welcome, config.BOT_TOKEN);
     return;
   }
 
-  // 2. Monthly summary command
+  // 2. Quick Reference Guide (/help)
+  if (text === "/help") {
+    const helpText =
+      `📖 <b>Pocket Ledger — Quick Guide</b>\n\n` +
+      `<b>1. Log a Text Expense</b>\n` +
+      `Start with the amount followed by a short note:\n` +
+      `• <code>4500 iced americano</code>\n` +
+      `• <code>18,500 taxi home</code>\n\n` +
+      `<b>2. Archive a Receipt Photo</b>\n` +
+      `Send any photo with <code>&lt;amount&gt; &lt;note&gt;</code> in the caption (or send a photo alone to save it first).\n\n` +
+      `<b>3. View Monthly Analytics</b>\n` +
+      `• /summary — Current month breakdown\n` +
+      `• <code>/summary 2026-11</code> — Specific month breakdown`;
+    sendReply(chatId, helpText, config.BOT_TOKEN);
+    return;
+  }
+
+  // 3. Monthly summary command
   if (text.startsWith("/summary")) {
     handleSummaryCommand(message, config);
     return;
   }
 
-  // 3. Receipt photo (with or without caption)
+  // 4. Receipt photo (with or without caption)
   if (message.photo && message.photo.length > 0) {
     handlePhotoExpense(message, config);
     return;
   }
 
-  // 4. Standard text expense
+  // 5. Standard text expense
   if (text) {
     handleTextExpense(message, config);
   }
