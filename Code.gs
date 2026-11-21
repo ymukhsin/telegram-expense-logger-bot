@@ -1,5 +1,8 @@
 /**
- * Milestone 4: Receipt Photo Archiving (Google Drive) + Text Expenses + Categories
+ * Pocket Ledger Bot (v1.0)
+ * Zero-cost, serverless Telegram Expense & Receipt Logger built on Google Apps Script.
+ * Architecture: Multi-user isolation with Google Sheets as a private headless DB
+ * and Google Drive for per-user receipt photo archiving.
  */
 
 const SHEET_NAME = "Expenses";
@@ -29,7 +32,7 @@ function doPost(e) {
 
     const update = JSON.parse(e.postData.contents);
 
-    // Deduplication guard: ignore duplicate retries of the same update_id
+    // Idempotency guard: ignore duplicate webhook retries of the same update_id
     if (!update.update_id || isDuplicateUpdate(update.update_id)) {
       return ContentService.createTextOutput("OK");
     }
@@ -58,26 +61,32 @@ function isDuplicateUpdate(updateId) {
 
 function handleMessage(message, config) {
   const chatId = message.chat.id;
-  const userId = String(message.from.id);
   const text = (message.text || "").trim();
 
-  // 1. Slash commands
+  // 1. Help / Start command
   if (text === "/start" || text === "/help") {
     const welcome =
       "💸 <b>Pocket Ledger Bot</b>\n\n" +
       "• <b>Log text expense:</b> <code>12000 lunch with team</code>\n" +
-      "• <b>Log receipt photo:</b> Send a photo with caption <code>45000 groceries</code>";
+      "• <b>Log receipt photo:</b> Send a photo with caption <code>45000 groceries</code>\n" +
+      "• <b>Monthly report:</b> <code>/summary</code> or <code>/summary 2026-11</code>";
     sendReply(chatId, welcome, config.BOT_TOKEN);
     return;
   }
 
-  // 2. Receipt photo (with or without caption)
+  // 2. Monthly summary command
+  if (text.startsWith("/summary")) {
+    handleSummaryCommand(message, config);
+    return;
+  }
+
+  // 3. Receipt photo (with or without caption)
   if (message.photo && message.photo.length > 0) {
     handlePhotoExpense(message, config);
     return;
   }
 
-  // 3. Standard text expense
+  // 4. Standard text expense
   if (text) {
     handleTextExpense(message, config);
   }
@@ -117,10 +126,6 @@ function handleTextExpense(message, config) {
   sendReply(chatId, reply, config.BOT_TOKEN, buildCategoryKeyboard(entryId));
 }
 
-/**
- * Downloads the highest-resolution receipt photo from Telegram, archives it
- * inside a user-specific Google Drive subfolder, and logs the shareable link.
- */
 function handlePhotoExpense(message, config) {
   const chatId = message.chat.id;
   const userId = String(message.from.id);
@@ -132,7 +137,6 @@ function handlePhotoExpense(message, config) {
     ? parsed.description
     : caption || "Receipt photo";
 
-  // Telegram sorts photo sizes ascending; the last item is the highest resolution
   const largestPhoto = message.photo[message.photo.length - 1];
   const imageBlob = downloadTelegramFile(largestPhoto.file_id, config.BOT_TOKEN);
   const receiptUrl = saveReceiptToDrive(imageBlob, config.DRIVE_FOLDER_ID, userId);
@@ -158,6 +162,49 @@ function handlePhotoExpense(message, config) {
   sendReply(chatId, reply, config.BOT_TOKEN, buildCategoryKeyboard(entryId));
 }
 
+/**
+ * Aggregates and formats monthly expenses strictly for the requesting User ID.
+ * Usage: "/summary" (current month) or "/summary YYYY-MM"
+ */
+function handleSummaryCommand(message, config) {
+  const chatId = message.chat.id;
+  const userId = String(message.from.id);
+  const tz = Session.getScriptTimeZone();
+
+  const arg = (message.text || "").replace("/summary", "").trim();
+  const targetMonth = /^\d{4}-\d{2}$/.test(arg)
+    ? arg
+    : Utilities.formatDate(new Date(), tz, "yyyy-MM");
+
+  const summary = buildUserMonthlySummary(config.SPREADSHEET_ID, userId, targetMonth, tz);
+
+  if (summary.count === 0) {
+    sendReply(
+      chatId,
+      `📊 <b>Monthly Summary (${targetMonth})</b>\n\nNo expenses recorded for this month yet.`,
+      config.BOT_TOKEN
+    );
+    return;
+  }
+
+  // Sort categories from highest spend to lowest
+  const sortedCategories = Object.entries(summary.byCategory).sort((a, b) => b[1] - a[1]);
+
+  const breakdownLines = sortedCategories.map(([cat, amt]) => {
+    const pct = summary.total > 0 ? Math.round((amt / summary.total) * 100) : 0;
+    return `• <b>${escapeHtml(cat)}:</b> ${amt.toLocaleString("en-US")} (${pct}%)`;
+  });
+
+  const reply =
+    `📊 <b>Monthly Summary (${targetMonth})</b>\n\n` +
+    `💰 <b>Total Spent:</b> ${summary.total.toLocaleString("en-US")}\n` +
+    `🧾 <b>Transactions:</b> ${summary.count}\n\n` +
+    `📂 <b>By Category:</b>\n` +
+    breakdownLines.join("\n");
+
+  sendReply(chatId, reply, config.BOT_TOKEN);
+}
+
 function handleCallbackQuery(callbackQuery, config) {
   const userId = String(callbackQuery.from.id);
   const chatId = callbackQuery.message.chat.id;
@@ -176,7 +223,6 @@ function handleCallbackQuery(callbackQuery, config) {
   if (updated) {
     answerCallbackQuery(callbackQuery.id, `Saved as ${category}!`, config.BOT_TOKEN);
 
-    // Preserve clickable Drive link if this confirmation came from a receipt photo
     const linkEntity = (callbackQuery.message.entities || []).find(
       (ent) => ent.type === "text_link"
     );
@@ -226,11 +272,41 @@ function updateRowCategory(spreadsheetId, entryId, userId, newCategory) {
 
   for (let i = data.length - 1; i >= 1; i--) {
     if (String(data[i][0]) === entryId && String(data[i][1]) === userId) {
-      sheet.getRange(i + 1, 5).setValue(newCategory); // Column E = Category
+      sheet.getRange(i + 1, 5).setValue(newCategory);
       return true;
     }
   }
   return false;
+}
+
+function buildUserMonthlySummary(spreadsheetId, userId, targetMonth, tz) {
+  const sheet = SpreadsheetApp.openById(spreadsheetId).getSheetByName(SHEET_NAME);
+  const data = sheet.getDataRange().getValues();
+
+  let total = 0;
+  let count = 0;
+  const byCategory = {};
+
+  for (let i = 1; i < data.length; i++) {
+    const rowUserId = String(data[i][1]);
+    if (rowUserId !== userId) continue;
+
+    const rawDate = data[i][2];
+    const rowMonth = rawDate instanceof Date
+      ? Utilities.formatDate(rawDate, tz, "yyyy-MM")
+      : String(rawDate).slice(0, 7);
+
+    if (rowMonth !== targetMonth) continue;
+
+    const amount = Number(data[i][3]) || 0;
+    const category = String(data[i][4] || "Uncategorized");
+
+    total += amount;
+    count += 1;
+    byCategory[category] = (byCategory[category] || 0) + amount;
+  }
+
+  return { total, count, byCategory };
 }
 
 function downloadTelegramFile(fileId, botToken) {
@@ -254,7 +330,11 @@ function downloadTelegramFile(fileId, botToken) {
 function saveReceiptToDrive(blob, rootFolderId, userId) {
   const userFolder = getOrCreateUserFolder(rootFolderId, userId);
   const file = userFolder.createFile(blob);
-  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  try {
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  } catch (e) {
+    console.warn("Link sharing restricted by domain policy:", e);
+  }
   return file.getUrl();
 }
 
@@ -349,9 +429,6 @@ function escapeHtml(str) {
 // DEPLOYMENT & SETUP UTILITIES
 // ============================================================================
 
-/**
- * Run once during setup to authorize Google Sheets & Google Drive scopes.
- */
 function authorizeServices() {
   const config = getConfig();
   const sheet = SpreadsheetApp.openById(config.SPREADSHEET_ID).getSheetByName(SHEET_NAME);
