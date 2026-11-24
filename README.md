@@ -1,4 +1,4 @@
-# 💸 Pocket Ledger Bot — Serverless Telegram Expense & Receipt Logger
+# 💸 Pocket Ledger Bot — Serverless Telegram Expense & Receipt Logger - https://t.me/pocket_spendbot
 
 A zero-cost, serverless Telegram bot built on **Google Apps Script** that turns everyday chat messages and receipt photos into structured financial records inside **Google Sheets** and **Google Drive**.
 
