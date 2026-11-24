@@ -20,7 +20,8 @@ function getConfig() {
     BOT_TOKEN: props.getProperty("BOT_TOKEN"),
     SPREADSHEET_ID: props.getProperty("SPREADSHEET_ID"),
     DRIVE_FOLDER_ID: props.getProperty("DRIVE_FOLDER_ID"),
-    WEB_APP_URL: props.getProperty("WEB_APP_URL")
+    WEB_APP_URL: props.getProperty("WEB_APP_URL"),
+    GEMINI_API_KEY: props.getProperty("GEMINI_API_KEY")
   };
 }
 
