@@ -117,7 +117,22 @@ function handleMessage(message, config) {
 function handleTextExpense(message, config) {
   const chatId = message.chat.id;
   const userId = String(message.from.id);
-  const parsed = parseExpenseInput(message.text.trim());
+  const rawText = message.text.trim();
+
+  // Fast path: standard "<amount> <note>" regex parser
+  let parsed = parseExpenseInput(rawText);
+  let detectedCategory = "Uncategorized";
+  let usedAi = false;
+
+  // Smart fallback: natural-language extraction via Gemini when configured
+  if (!parsed && config.GEMINI_API_KEY) {
+    const aiResult = extractExpenseWithGemini(rawText, null, config.GEMINI_API_KEY);
+    if (aiResult) {
+      parsed = { amount: aiResult.amount, description: aiResult.description };
+      detectedCategory = aiResult.category;
+      usedAi = true;
+    }
+  }
 
   if (!parsed) {
     sendReply(
@@ -133,17 +148,23 @@ function handleTextExpense(message, config) {
     entryId: entryId,
     userId: userId,
     amount: parsed.amount,
-    category: "Uncategorized",
+    category: detectedCategory,
     description: parsed.description,
     receiptUrl: "-"
   });
+
+  const aiBadge = usedAi ? `🤖 <b>Auto-Category:</b> ${escapeHtml(detectedCategory)}\n` : "";
+  const promptFooter = usedAi
+    ? `👇 <i>Tap below to override category:</i>`
+    : `👇 <b>Select a category:</b>`;
 
   const reply =
     `✅ <b>Expense Logged!</b>\n` +
     `💰 <b>Amount:</b> ${parsed.amount.toLocaleString("en-US")}\n` +
     `📝 <b>Note:</b> ${escapeHtml(parsed.description)}\n` +
+    aiBadge +
     `🆔 <code>${entryId}</code>\n\n` +
-    `👇 <b>Select a category:</b>`;
+    promptFooter;
 
   sendReply(chatId, reply, config.BOT_TOKEN, buildCategoryKeyboard(entryId));
 }
@@ -153,6 +174,9 @@ function handlePhotoExpense(message, config) {
   const userId = String(message.from.id);
   const caption = (message.caption || "").trim();
   const parsed = caption ? parseExpenseInput(caption) : null;
+
+// TODO(v1.1): When !parsed && config.GEMINI_API_KEY, run receipt OCR via
+// extractExpenseWithGemini(caption, imageBlob, config.GEMINI_API_KEY)
 
   const amount = parsed ? parsed.amount : 0;
   const description = parsed
