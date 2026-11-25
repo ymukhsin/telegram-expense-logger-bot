@@ -31,8 +31,14 @@ Designed with a **multi-tenant headless architecture**, Google Sheets remains st
                │  (Private Headless Ledger)  │                     │  /Telegram_Receipts/<uid>/  │
                └─────────────────────────────┘                     └─────────────────────────────┘
 
+
+├── Code.gs      # Core Telegram webhook router, Sheets CRUD, Drive archiving & analytics
+├── worker.js    # Cloudflare Worker edge relay (bypasses GAS 302 webhook timeouts)
+└── README.md    # Architecture documentation and self-hosting guide
+
 ## 🗺️ Roadmap
 
 - [x] **v1.0:** Multi-user webhook architecture, Cloudflare edge relay, text expense parser, inline category keyboards, Drive receipt archiving, and `/summary` monthly reports.
 - [ ] **v1.1 (In Progress):** Gemini Flash API integration for natural-language expense extraction (`gemini.gs` scaffolded) and zero-caption receipt OCR.
 - [ ] **v2.0 (Planned):** Interactive Telegram Mini App spending dashboard.
+
