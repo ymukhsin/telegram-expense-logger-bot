@@ -1,11 +1,12 @@
 /**
- * Pocket Ledger Bot (v1.0)
+ * Pocket Ledger Bot
  * Zero-cost, serverless Telegram Expense & Receipt Logger built on Google Apps Script.
  * Architecture: Multi-user isolation with Google Sheets as a private headless DB
  * and Google Drive for per-user receipt photo archiving.
  */
 
 const SHEET_NAME = "Expenses";
+const REPORT_CHAT_LIMIT = 15;
 const CATEGORIES = [
   ["🍔 Food", "Food"],
   ["🚕 Transport", "Transport"],
@@ -20,8 +21,7 @@ function getConfig() {
     BOT_TOKEN: props.getProperty("BOT_TOKEN"),
     SPREADSHEET_ID: props.getProperty("SPREADSHEET_ID"),
     DRIVE_FOLDER_ID: props.getProperty("DRIVE_FOLDER_ID"),
-    WEB_APP_URL: props.getProperty("WEB_APP_URL"),
-    GEMINI_API_KEY: props.getProperty("GEMINI_API_KEY")
+    WEB_APP_URL: props.getProperty("WEB_APP_URL")
   };
 }
 
@@ -73,7 +73,8 @@ function handleMessage(message, config) {
       `🚀 <b>Try your first entry right now:</b>\n` +
       `• <b>Cash / Quick Note:</b> <code>12000 lunch with team</code>\n` +
       `• <b>Receipt Photo:</b> Snap a receipt with caption <code>45000 groceries</code>\n` +
-      `• <b>Monthly Report:</b> Tap or send /summary\n\n` +
+      `• <b>Monthly Totals:</b> /summary\n` +
+      `• <b>Itemized Statement:</b> /report\n\n` +
       `🔒 <i>Your expenses and receipts are isolated privately under your Telegram ID.</i>`;
     sendReply(chatId, welcome, config.BOT_TOKEN);
     return;
@@ -89,26 +90,33 @@ function handleMessage(message, config) {
       `• <code>18,500 taxi home</code>\n\n` +
       `<b>2. Archive a Receipt Photo</b>\n` +
       `Send any photo with <code>&lt;amount&gt; &lt;note&gt;</code> in the caption (or send a photo alone to save it first).\n\n` +
-      `<b>3. View Monthly Analytics</b>\n` +
-      `• /summary — Current month breakdown\n` +
-      `• <code>/summary 2026-11</code> — Specific month breakdown`;
+      `<b>3. Reports &amp; Analytics</b>\n` +
+      `• /summary or <code>/summary 2026-11</code> — Category totals\n` +
+      `• /report or <code>/report 2026-11</code> — Itemized list (auto-PDF if &gt;15 items)\n` +
+      `• <code>/report all</code> or <code>/report pdf</code> — Full history or forced PDF`;
     sendReply(chatId, helpText, config.BOT_TOKEN);
     return;
   }
 
-  // 3. Monthly summary command
+  // 3. Monthly summary command (/summary)
   if (text.startsWith("/summary")) {
     handleSummaryCommand(message, config);
     return;
   }
 
-  // 4. Receipt photo (with or without caption)
+  // 4. Detailed itemized report command (/report)
+  if (text.startsWith("/report")) {
+    handleReportCommand(message, config);
+    return;
+  }
+
+  // 5. Receipt photo (with or without caption)
   if (message.photo && message.photo.length > 0) {
     handlePhotoExpense(message, config);
     return;
   }
 
-  // 5. Standard text expense
+  // 6. Standard text expense
   if (text) {
     handleTextExpense(message, config);
   }
@@ -117,22 +125,7 @@ function handleMessage(message, config) {
 function handleTextExpense(message, config) {
   const chatId = message.chat.id;
   const userId = String(message.from.id);
-  const rawText = message.text.trim();
-
-  // Fast path: standard "<amount> <note>" regex parser
-  let parsed = parseExpenseInput(rawText);
-  let detectedCategory = "Uncategorized";
-  let usedAi = false;
-
-  // Smart fallback: natural-language extraction via Gemini when configured
-  if (!parsed && config.GEMINI_API_KEY) {
-    const aiResult = extractExpenseWithGemini(rawText, null, config.GEMINI_API_KEY);
-    if (aiResult) {
-      parsed = { amount: aiResult.amount, description: aiResult.description };
-      detectedCategory = aiResult.category;
-      usedAi = true;
-    }
-  }
+  const parsed = parseExpenseInput(message.text.trim());
 
   if (!parsed) {
     sendReply(
@@ -148,23 +141,17 @@ function handleTextExpense(message, config) {
     entryId: entryId,
     userId: userId,
     amount: parsed.amount,
-    category: detectedCategory,
+    category: "Uncategorized",
     description: parsed.description,
     receiptUrl: "-"
   });
-
-  const aiBadge = usedAi ? `🤖 <b>Auto-Category:</b> ${escapeHtml(detectedCategory)}\n` : "";
-  const promptFooter = usedAi
-    ? `👇 <i>Tap below to override category:</i>`
-    : `👇 <b>Select a category:</b>`;
 
   const reply =
     `✅ <b>Expense Logged!</b>\n` +
     `💰 <b>Amount:</b> ${parsed.amount.toLocaleString("en-US")}\n` +
     `📝 <b>Note:</b> ${escapeHtml(parsed.description)}\n` +
-    aiBadge +
     `🆔 <code>${entryId}</code>\n\n` +
-    promptFooter;
+    `👇 <b>Select a category:</b>`;
 
   sendReply(chatId, reply, config.BOT_TOKEN, buildCategoryKeyboard(entryId));
 }
@@ -174,9 +161,6 @@ function handlePhotoExpense(message, config) {
   const userId = String(message.from.id);
   const caption = (message.caption || "").trim();
   const parsed = caption ? parseExpenseInput(caption) : null;
-
-// TODO(v1.1): When !parsed && config.GEMINI_API_KEY, run receipt OCR via
-// extractExpenseWithGemini(caption, imageBlob, config.GEMINI_API_KEY)
 
   const amount = parsed ? parsed.amount : 0;
   const description = parsed
@@ -217,7 +201,7 @@ function handleSummaryCommand(message, config) {
   const userId = String(message.from.id);
   const tz = Session.getScriptTimeZone();
 
-  const arg = (message.text || "").replace("/summary", "").trim();
+  const arg = (message.text || "").replace(/^\/summary(@\w+)?/i, "").trim();
   const targetMonth = /^\d{4}-\d{2}$/.test(arg)
     ? arg
     : Utilities.formatDate(new Date(), tz, "yyyy-MM");
@@ -247,6 +231,69 @@ function handleSummaryCommand(message, config) {
     `🧾 <b>Transactions:</b> ${summary.count}\n\n` +
     `📂 <b>By Category:</b>\n` +
     breakdownLines.join("\n");
+
+  sendReply(chatId, reply, config.BOT_TOKEN);
+}
+
+/**
+ * Sends a detailed itemized expense report strictly for the requesting User ID.
+ * Supports: /report, /report 2026-11, /report all, /report pdf, /report 2026-11 pdf
+ */
+function handleReportCommand(message, config) {
+  const chatId = message.chat.id;
+  const userId = String(message.from.id);
+  const firstName = (message.from && message.from.first_name) || "User";
+  const tz = Session.getScriptTimeZone();
+
+  const rawArg = (message.text || "").replace(/^\/report(@\w+)?/i, "").trim().toLowerCase();
+  const tokens = rawArg ? rawArg.split(/\s+/) : [];
+
+  const forcePdf = tokens.includes("pdf");
+  const isAllTime = tokens.includes("all");
+  const monthToken = tokens.find((t) => /^\d{4}-\d{2}$/.test(t));
+
+  const targetMonth = isAllTime
+    ? "ALL"
+    : monthToken || Utilities.formatDate(new Date(), tz, "yyyy-MM");
+
+  const report = getUserExpenseItems(config.SPREADSHEET_ID, userId, targetMonth, tz);
+  const periodLabel = isAllTime ? "All Time" : targetMonth;
+
+  if (report.items.length === 0) {
+    sendReply(
+      chatId,
+      `📋 <b>Expense Report (${periodLabel})</b>\n\nNo transactions found for this period.`,
+      config.BOT_TOKEN
+    );
+    return;
+  }
+
+  // Send PDF if items exceed threshold OR user explicitly typed "/report pdf"
+  if (forcePdf || report.items.length > REPORT_CHAT_LIMIT) {
+    const fileSlug = isAllTime ? "All_Time" : targetMonth;
+    const pdfBlob = buildReportPdfBlob(report, periodLabel, firstName, `PocketLedger_${fileSlug}.pdf`);
+    const caption =
+      `📄 <b>Expense Statement (${periodLabel})</b>\n` +
+      `💰 <b>Total:</b> ${report.total.toLocaleString("en-US")} (${report.items.length} items)`;
+
+    sendDocument(chatId, pdfBlob, caption, config.BOT_TOKEN);
+    return;
+  }
+
+  // Otherwise send a fast, clean itemized list directly in chat
+  const lines = report.items.map((item, idx) => {
+    const receiptTag = item.receiptUrl !== "-" ? ` · <a href="${item.receiptUrl}">🧾 Receipt</a>` : "";
+    return (
+      `${idx + 1}. <b>${item.amount.toLocaleString("en-US")}</b> — ${escapeHtml(item.description)}\n` +
+      `    <i>${item.shortDate} · ${escapeHtml(item.category)}</i>${receiptTag}`
+    );
+  });
+
+  const reply =
+    `📋 <b>Detailed Report (${periodLabel})</b>\n` +
+    `💰 <b>Total:</b> ${report.total.toLocaleString("en-US")} (${report.items.length} items)\n\n` +
+    lines.join("\n\n") +
+    `\n\n💡 <i>Tip: Send <code>/report pdf</code> for a downloadable PDF copy.</i>`;
 
   sendReply(chatId, reply, config.BOT_TOKEN);
 }
@@ -355,6 +402,92 @@ function buildUserMonthlySummary(spreadsheetId, userId, targetMonth, tz) {
   return { total, count, byCategory };
 }
 
+function getUserExpenseItems(spreadsheetId, userId, targetMonth, tz) {
+  const sheet = SpreadsheetApp.openById(spreadsheetId).getSheetByName(SHEET_NAME);
+  const data = sheet.getDataRange().getValues();
+
+  let total = 0;
+  const items = [];
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][1]) !== userId) continue;
+
+    const rawDate = data[i][2];
+    const rowMonth = rawDate instanceof Date
+      ? Utilities.formatDate(rawDate, tz, "yyyy-MM")
+      : String(rawDate).slice(0, 7);
+
+    if (targetMonth !== "ALL" && rowMonth !== targetMonth) continue;
+
+    const shortDate = rawDate instanceof Date
+      ? Utilities.formatDate(rawDate, tz, "yyyy-MM-dd HH:mm")
+      : String(rawDate).slice(0, 16);
+
+    const amount = Number(data[i][3]) || 0;
+    const category = String(data[i][4] || "Uncategorized");
+    const description = String(data[i][5] || "-");
+    const receiptUrl = String(data[i][6] || "-");
+
+    total += amount;
+    items.push({
+      entryId: String(data[i][0]),
+      shortDate: shortDate,
+      amount: amount,
+      category: category,
+      description: description,
+      receiptUrl: receiptUrl
+    });
+  }
+
+  return { total, items };
+}
+
+function buildReportPdfBlob(report, periodLabel, userName, fileName) {
+  const rowsHtml = report.items
+    .map((item, idx) => {
+      const receiptCell =
+        item.receiptUrl !== "-"
+          ? `<a href="${item.receiptUrl}">View</a>`
+          : "-";
+      return (
+        `<tr>` +
+        `<td>${idx + 1}</td>` +
+        `<td>${escapeHtml(item.shortDate)}</td>` +
+        `<td>${escapeHtml(item.category)}</td>` +
+        `<td>${escapeHtml(item.description)}</td>` +
+        `<td style="text-align:right;">${item.amount.toLocaleString("en-US")}</td>` +
+        `<td style="text-align:center;">${receiptCell}</td>` +
+        `</tr>`
+      );
+    })
+    .join("");
+
+  const html =
+    `<!DOCTYPE html><html><head><meta charset="utf-8">` +
+    `<style>` +
+    `body { font-family: Arial, sans-serif; font-size: 11px; color: #222; }` +
+    `h2 { margin: 0 0 4px 0; color: #14532d; }` +
+    `.meta { margin-bottom: 14px; color: #555; }` +
+    `table { width: 100%; border-collapse: collapse; }` +
+    `th { background-color: #14532d; color: #fff; text-align: left; padding: 6px; }` +
+    `td { border-bottom: 1px solid #ddd; padding: 6px; }` +
+    `.total-row td { font-weight: bold; background-color: #f3f4f6; border-top: 2px solid #14532d; }` +
+    `</style></head><body>` +
+    `<h2>Pocket Ledger — Expense Statement</h2>` +
+    `<div class="meta">Account: <b>${escapeHtml(userName)}</b> | Period: <b>${escapeHtml(periodLabel)}</b> | Transactions: <b>${report.items.length}</b></div>` +
+    `<table>` +
+    `<thead><tr>` +
+    `<th>#</th><th>Date</th><th>Category</th><th>Description</th><th style="text-align:right;">Amount</th><th style="text-align:center;">Receipt</th>` +
+    `</tr></thead>` +
+    `<tbody>${rowsHtml}` +
+    `<tr class="total-row"><td colspan="4">Total Spent</td><td style="text-align:right;">${report.total.toLocaleString("en-US")}</td><td></td></tr>` +
+    `</tbody></table></body></html>`;
+
+  return Utilities.newBlob(html, "text/html", "report.html")
+    .getAs("application/pdf")
+    .setName(fileName);
+}
+
 function downloadTelegramFile(fileId, botToken) {
   const metaUrl = `https://api.telegram.org/bot${botToken}/getFile?file_id=${fileId}`;
   const metaRes = JSON.parse(UrlFetchApp.fetch(metaUrl).getContentText());
@@ -436,6 +569,18 @@ function sendReply(chatId, htmlText, token, replyMarkup) {
     method: "post",
     contentType: "application/json",
     payload: JSON.stringify(payload)
+  });
+}
+
+function sendDocument(chatId, fileBlob, captionHtml, token) {
+  UrlFetchApp.fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
+    method: "post",
+    payload: {
+      chat_id: String(chatId),
+      document: fileBlob,
+      caption: captionHtml,
+      parse_mode: "HTML"
+    }
   });
 }
 
