@@ -1,4 +1,4 @@
-# 💸 Pocket Ledger Bot — Serverless Telegram Expense & Receipt Logger - https://t.me/pocket_spendbot
+⁹# 💸 Pocket Ledger Bot — Serverless Telegram Expense & Receipt Logger - https://t.me/pocket_spendbot
 
 A zero-cost, serverless Telegram bot built on **Google Apps Script** that turns everyday chat messages and receipt photos into structured financial records inside **Google Sheets** and **Google Drive**.
 
@@ -33,6 +33,7 @@ Designed with a **multi-tenant headless architecture**, Google Sheets remains st
 
 
 ├── Code.gs      # Core Telegram webhook router, Sheets CRUD, Drive archiving & analytics
+Next plan for code.gs is to add adding the Adaptive /report & PDF Functions to Code.gs
 ├── worker.js    # Cloudflare Worker edge relay (bypasses GAS 302 webhook timeouts)
 └── README.md    # Architecture documentation and self-hosting guide
 
