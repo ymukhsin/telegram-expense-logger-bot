@@ -66,16 +66,16 @@ function handleMessage(message, config) {
   const firstName = escapeHtml((message.from && message.from.first_name) || "there");
 
   // 1. Personalized Welcome Onboarding (/start)
+ // 1. Personalized Welcome Onboarding (/start)
   if (text === "/start") {
     const welcome =
       `👋 <b>Welcome to Pocket Ledger, ${firstName}!</b>\n\n` +
-      `Log your daily spending in seconds—no spreadsheets to open, no forms to fill.\n\n` +
-      `🚀 <b>Try your first entry right now:</b>\n` +
-      `• <b>Cash / Quick Note:</b> <code>12000 lunch with team</code>\n` +
-      `• <b>Receipt Photo:</b> Snap a receipt with caption <code>45000 groceries</code>\n` +
-      `• <b>Monthly Totals:</b> /summary\n` +
-      `• <b>Itemized Statement:</b> /report\n\n` +
-      `🔒 <i>Your expenses and receipts are isolated privately under your Telegram ID.</i>`;
+      `Log expenses in seconds and export itemized PDF reports anytime.\n\n` +
+      `• <b>Log text:</b> <code>12000 lunch with team</code>\n` +
+      `• <b>Log receipt:</b> Send photo with <code>45000 groceries</code>\n` +
+      `• <b>Totals:</b> /summary (or <code>/summary 2026-11</code>)\n` +
+      `• <b>Itemized / PDF:</b> /report (or <code>/report pdf</code>)\n\n` +
+      `🔒 <i>All data is stored privately under your Telegram ID.</i>`;
     sendReply(chatId, welcome, config.BOT_TOKEN);
     return;
   }
@@ -83,17 +83,14 @@ function handleMessage(message, config) {
   // 2. Quick Reference Guide (/help)
   if (text === "/help") {
     const helpText =
-      `📖 <b>Pocket Ledger — Quick Guide</b>\n\n` +
-      `<b>1. Log a Text Expense</b>\n` +
-      `Start with the amount followed by a short note:\n` +
-      `• <code>4500 iced americano</code>\n` +
-      `• <code>18,500 taxi home</code>\n\n` +
-      `<b>2. Archive a Receipt Photo</b>\n` +
-      `Send any photo with <code>&lt;amount&gt; &lt;note&gt;</code> in the caption (or send a photo alone to save it first).\n\n` +
-      `<b>3. Reports &amp; Analytics</b>\n` +
+      `📖 <b>Pocket Ledger — Commands &amp; Formats</b>\n\n` +
+      `<b>Log Expenses</b>\n` +
+      `• <code>4500 iced americano</code> — Text entry\n` +
+      `• <i>Photo</i> + <code>45000 groceries</code> — Archive receipt\n\n` +
+      `<b>View &amp; Export</b>\n` +
       `• /summary or <code>/summary 2026-11</code> — Category totals\n` +
-      `• /report or <code>/report 2026-11</code> — Itemized list (auto-PDF if &gt;15 items)\n` +
-      `• <code>/report all</code> or <code>/report pdf</code> — Full history or forced PDF`;
+      `• /report or <code>/report 2026-11</code> — Itemized list (auto-PDF if &gt;15)\n` +
+      `• <code>/report pdf</code> or <code>/report all</code> — Download PDF or full history`;
     sendReply(chatId, helpText, config.BOT_TOKEN);
     return;
   }
